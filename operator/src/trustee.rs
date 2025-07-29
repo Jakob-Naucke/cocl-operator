@@ -1,5 +1,8 @@
+use anyhow::Context;
 use base64::{Engine as _, engine::general_purpose};
 use crds::{KbsConfig, KbsConfigSpec, Trustee};
+use k8s_crds_cert_manager::certificates::{Certificate, CertificateIssuerRef, CertificateSpec};
+use k8s_crds_cert_manager::issuers::{Issuer, IssuerSelfSigned, IssuerSpec};
 use k8s_openapi::api::core::v1::{ConfigMap, Secret};
 use kube::api::PostParams;
 use kube::{Api, Client, Error};
@@ -7,6 +10,10 @@ use log::info;
 use openssl::pkey::PKey;
 use std::collections::BTreeMap;
 use std::fs;
+
+const ISSUER: &str = "kbs-https";
+const HTTPS_KEY: &str = "kbs-https-key";
+const HTTPS_CERT: &str = "kbs-https-certificate";
 
 pub async fn generate_kbs_auth_public_key(
     client: Client,
@@ -49,9 +56,92 @@ pub async fn generate_kbs_auth_public_key(
     Ok(())
 }
 
+pub async fn generate_kbs_https_certificate(
+    client: Client,
+    namespace: &str,
+    secret_name: &str,
+) -> anyhow::Result<()> {
+    let issuer = Issuer {
+        // XXX consider macro
+        metadata: kube::api::ObjectMeta {
+            name: Some(ISSUER.to_string()),
+            namespace: Some(namespace.to_string()),
+            ..Default::default()
+        },
+        spec: IssuerSpec {
+            self_signed: Some(IssuerSelfSigned {
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
 
-pub async fn generate_kbs_https_certificate(namespace: &str, secret_name: &str) -> anyhow::Result<()> {
-    todo!();
+    let issuers: Api<Issuer> = Api::namespaced(client.clone(), namespace);
+    match issuers.create(&PostParams::default(), &issuer).await {
+        // XXX consider macro
+        Ok(s) => info!("Created Issuer {:?}", s.metadata.name),
+        Err(Error::Api(ae)) if ae.code == 409 => info!("Issuer {} already exists", ISSUER),
+        Err(e) => return Err(e.into()),
+    }
+
+    let cert = Certificate {
+        metadata: kube::api::ObjectMeta {
+            name: Some(ISSUER.to_string()),
+            namespace: Some(namespace.to_string()),
+            ..Default::default()
+        },
+        spec: CertificateSpec {
+            dns_names: Some(vec!["kbs.operators.svc".to_string()]),
+            secret_name: secret_name.to_string(),
+            issuer_ref: CertificateIssuerRef {
+                name: ISSUER.to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let certs: Api<Certificate> = Api::namespaced(client.clone(), namespace);
+    match certs.create(&PostParams::default(), &cert).await {
+        Ok(s) => info!("Created Certificate {:?}", s.metadata.name),
+        Err(Error::Api(ae)) if ae.code == 409 => {
+            info!("Certificate {} already exists", secret_name)
+        }
+        Err(e) => return Err(e.into()),
+    }
+
+    // TODO integrate Trustee with cert-manager directly instead
+    let secrets: Api<Secret> = Api::namespaced(client, namespace);
+    let secrets_out = secrets.get(secret_name).await?;
+    let secrets_data = secrets_out
+        .data
+        .context(format!("No data in {secret_name}"))?;
+
+    for (name, key) in [(HTTPS_KEY, "tls.key"), (HTTPS_CERT, "tls_cert")] {
+        let data = secrets_data
+            .get(key)
+            .context(format!("Missing {key} in {secret_name}"))?;
+        // XXX what key?
+        let map = BTreeMap::from([("key".to_string(), data.clone())]);
+        let secret = Secret {
+            metadata: kube::api::ObjectMeta {
+                name: Some(name.to_string()),
+                namespace: Some(namespace.to_string()),
+                ..Default::default()
+            },
+            data: Some(map),
+            ..Default::default()
+        };
+        match secrets.create(&PostParams::default(), &secret).await {
+            Ok(s) => info!("Create secret {:?}", s.metadata.name),
+            Err(Error::Api(ae)) if ae.code == 409 => info!("Secret {name} already exists"),
+            Err(e) => return Err(e.into()),
+        }
+    }
+
+    Ok(())
 }
 
 pub async fn generate_kbs_configuration(
@@ -265,8 +355,8 @@ pub async fn generate_kbs(
             kbs_deployment_type: "AllInOneDeployment".to_string(),
             kbs_rvps_ref_values_config_map_name: trustee.reference_values.clone(),
             kbs_secret_resources: vec![secret.to_string()],
-            kbs_https_key_secret_name: "kbs-https-key".to_string(),
-            kbs_https_cert_secret_name: "kbs-https-certificate".to_string(),
+            kbs_https_key_secret_name: HTTPS_KEY.to_string(),
+            kbs_https_cert_secret_name: HTTPS_CERT.to_string(),
             kbs_resource_policy_config_map_name: trustee.resource_policy.clone(),
         },
     };

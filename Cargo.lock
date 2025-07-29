@@ -978,6 +978,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "k8s-crds-cert-manager"
+version = "1.17.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "54b652ce7304b354e4cf6bc200d56555f262b292733216cbf422ee3e29c3c18b"
+dependencies = [
+ "k8s-openapi",
+ "kube",
+ "kube-derive",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "k8s-openapi"
 version = "0.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1257,6 +1270,7 @@ dependencies = [
  "crds",
  "env_logger",
  "futures-util",
+ "k8s-crds-cert-manager",
  "k8s-openapi",
  "kube",
  "lo",
