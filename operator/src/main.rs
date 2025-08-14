@@ -16,6 +16,7 @@ use thiserror::Error;
 use crds::ConfidentialCluster;
 mod k8s_util;
 mod reference_values;
+mod register_server;
 mod trustee;
 
 #[derive(Debug, Error)]
@@ -178,6 +179,32 @@ async fn install_trustee_configuration(client: Client) -> Result<()> {
     Ok(())
 }
 
+async fn install_register_server(client: Client) -> Result<()> {
+    let cocl = list_confidential_clusters(client.clone(), client.default_namespace()).await?;
+
+    match register_server::create_register_server_rbac(client.clone()).await {
+        Ok(_) => info!("Register server RBAC created/updated successfully"),
+        Err(e) => error!("Failed to create register server RBAC: {e}"),
+    }
+
+    match register_server::create_register_server_deployment(
+        client.clone(),
+        &cocl.spec.register_server_image,
+    )
+    .await
+    {
+        Ok(_) => info!("Register server deployment created/updated successfully"),
+        Err(e) => error!("Failed to create register server deployment: {e}"),
+    }
+
+    match register_server::create_register_server_service(client.clone()).await {
+        Ok(_) => info!("Register server service created/updated successfully"),
+        Err(e) => error!("Failed to create register server service: {e}"),
+    }
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
@@ -191,6 +218,7 @@ async fn main() -> Result<()> {
     let cl = Api::<ConfidentialCluster>::namespaced(client.clone(), &namespace);
 
     tokio::spawn(install_trustee_configuration(client.clone()));
+    tokio::spawn(install_register_server(client.clone()));
     Controller::new(cl, watcher::Config::default())
         .run::<_, ContextData>(reconcile, k8s_util::controller_error_policy, context)
         .for_each(|res| async move {
