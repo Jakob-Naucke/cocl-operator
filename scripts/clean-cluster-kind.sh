@@ -11,4 +11,5 @@ for image in "$@"; do
 	fi
 done
 kubectl delete deploy cocl-operator -n confidential-clusters || true
+kubectl delete job compute-pcrs -n confidential-clusters || true
 

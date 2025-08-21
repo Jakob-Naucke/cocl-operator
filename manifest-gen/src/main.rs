@@ -4,7 +4,8 @@ use crds::{ConfidentialCluster, ConfidentialClusterSpec, Trustee};
 use k8s_openapi::{
     api::{
         apps::v1::Deployment,
-        core::v1::{Container, Namespace, PodSpec, PodTemplateSpec, ServiceAccount},
+        batch::v1::Job,
+        core::v1::{ConfigMap, Container, Namespace, PodSpec, PodTemplateSpec, ServiceAccount},
         rbac::v1::{
             ClusterRole, ClusterRoleBinding, PolicyRule, Role, RoleBinding, RoleRef, Subject,
         },
@@ -42,6 +43,12 @@ pub struct Args {
     /// Trustee namespace where to install trustee configuration
     #[arg(long, default_value = "operators")]
     trustee_namespace: String,
+
+    #[arg(
+        long,
+        default_value = "quay.io/confidential-clusters/compute-pcrs:latest"
+    )]
+    pcrs_compute_image: String,
 }
 
 fn generate_operator(args: &Args) -> Result<()> {
@@ -117,6 +124,32 @@ fn generate_operator(args: &Args) -> Result<()> {
             ..Default::default()
         },
         rules: Some(vec![
+            PolicyRule {
+                api_groups: Some(vec!["batch".to_string()]),
+                resources: Some(vec![Job::plural(&()).to_string()]),
+                verbs: vec![
+                    "create".to_string(),
+                    "get".to_string(),
+                    "list".to_string(),
+                    "watch".to_string(),
+                    "patch".to_string(),
+                    "update".to_string(),
+                ],
+                ..Default::default()
+            },
+            PolicyRule {
+                api_groups: Some(vec!["".to_string()]),
+                resources: Some(vec![ConfigMap::plural(&()).to_string()]),
+                verbs: vec![
+                    "create".to_string(),
+                    "get".to_string(),
+                    "list".to_string(),
+                    "watch".to_string(),
+                    "patch".to_string(),
+                    "update".to_string(),
+                ],
+                ..Default::default()
+            },
             PolicyRule {
                 api_groups: Some(vec![ConfidentialCluster::group(&()).to_string()]),
                 resources: Some(vec![ConfidentialCluster::plural(&()).to_string()]),
@@ -271,6 +304,7 @@ pub fn generate_confidential_cluster_cr(args: &Args) -> Result<()> {
                 kbs_auth_key: "kbs-auth-key".to_string(),
                 kbs_config_name: "kbsconfig".to_string(),
             },
+            pcrs_compute_image: args.pcrs_compute_image.clone(),
         },
     };
 
