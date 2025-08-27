@@ -198,6 +198,20 @@ pub async fn generate_reference_values(
         ..Default::default()
     };
 
+    let bare_config_map = ConfigMap {
+        metadata: ObjectMeta {
+            name: Some(name.to_string()),
+            namespace: Some(trustee_namespace.to_string()),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let config_maps: Api<ConfigMap> = Api::namespaced(client.clone(), trustee_namespace);
+    let create = config_maps
+        .create(&PostParams::default(), &bare_config_map)
+        .await;
+    info_if_exists!(create, "ConfigMap", name);
+
     let jobs: Api<Job> = Api::namespaced(client.clone(), job_namespace);
     let create = jobs.create(&PostParams::default(), &job).await;
     info_if_exists!(create, "Job", job_name);
