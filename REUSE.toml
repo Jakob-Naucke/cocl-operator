@@ -4,6 +4,8 @@ version = 1
 path = [
   "README.md",
   "Cargo.lock",
+  "crds/src/mc.rs",
+  "crds/src/mcp.rs",
   "operator/src/as-config.json",
   "operator/src/kbs-config.toml",
   "operator/src/resource.rego",

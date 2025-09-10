@@ -7,6 +7,12 @@ use kube_derive::CustomResource;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+mod mc;
+mod mcp;
+
+pub use mc::MachineConfig;
+pub use mcp::MachineConfigPool;
+
 #[derive(CustomResource, Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[kube(
     group = "confidential-containers.io",
