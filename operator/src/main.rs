@@ -26,8 +26,6 @@ struct ContextData {
     client: Client,
 }
 
-const BOOT_IMAGE: &str = "quay.io/fedora/fedora-coreos:42.20250705.3.0";
-
 async fn list_confidential_clusters(
     client: Client,
     namespace: &str,
@@ -119,12 +117,12 @@ async fn install_trustee_configuration(client: Client, namespace: String) -> Res
         ),
         Err(e) => error!("Failed to create the reference values configmap: {e}"),
     }
-    // TODO machine config input
-    match reference_values::handle_new_image(rv_ctx, BOOT_IMAGE).await {
-        Ok(_) => info!("Computed or retrieved reference values for image: {BOOT_IMAGE}",),
-        Err(e) => {
-            error!("Failed to compute or retrieve reference values for image {BOOT_IMAGE}: {e}",)
-        }
+
+    reference_values::launch_rv_mc_controller(rv_ctx.clone()).await;
+    match reference_values::populate_initial_rvs(rv_ctx).await
+    {
+        Ok(_) => info!("Populated initial reference values"),
+        Err(e) => error!("Failed to populate initial reference values: {e}"),
     }
 
     match trustee::generate_resource_policy(

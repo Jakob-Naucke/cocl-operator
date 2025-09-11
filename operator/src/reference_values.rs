@@ -9,7 +9,7 @@ use k8s_openapi::api::{
         PodTemplateSpec, Volume, VolumeMount,
     },
 };
-use kube::api::{DeleteParams, ObjectMeta, PostParams};
+use kube::api::{DeleteParams, ListParams, ObjectMeta, PostParams};
 use kube::runtime::{
     controller::{Action, Controller},
     watcher,
@@ -24,6 +24,7 @@ use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
 use thiserror::Error;
 
 use crate::trustee::{self, RvContextData, get_image_pcrs, info_if_exists};
+use crds::{MachineConfig, MachineConfigPool};
 use rv_store::*;
 
 #[derive(Debug, Error)]
@@ -157,6 +158,67 @@ fn build_compute_pcrs_pod_spec(
         restart_policy: Some("Never".to_string()),
         ..Default::default()
     }
+}
+
+async fn handle_mcp(mcp: Arc<MachineConfigPool>, ctx: Arc<RvContextData>) -> anyhow::Result<()> {
+    let err = "MCP changed, but had no name";
+    let mcp_name = &mcp.metadata.name.clone().context(err)?;
+    let mut err = format!("MCP {mcp_name} changed, but had no configuration");
+    let config = &mcp.spec.configuration.clone().context(err)?;
+    err = format!("MCP {mcp_name} changed, but config had no name");
+    let config_name = &config.name.clone().context(err)?;
+
+    let mcs: Api<MachineConfig> = Api::all(ctx.client.clone());
+    let mc = mcs.get(config_name).await?;
+    err = format!("MC {config_name} existed, but had no osImageUrl");
+    let url = mc.spec.os_image_url.context(err)?;
+    tokio::spawn(async move {
+        let ctx = Arc::<trustee::RvContextData>::unwrap_or_clone(ctx);
+        match handle_new_image(ctx, &url).await {
+            Ok(_) => info!("Set PCR values for new image {url}"),
+            Err(e) => error!("Failed to set PCR values for {url}: {e}"),
+        }
+    });
+    Ok(())
+}
+
+async fn mc_reconcile(
+    mcp: Arc<MachineConfigPool>,
+    ctx: Arc<RvContextData>,
+) -> Result<Action, Error> {
+    handle_mcp(mcp, ctx).await?;
+    Ok(Action::await_change())
+}
+
+fn mc_error_policy(
+    _obj: Arc<MachineConfigPool>,
+    error: &Error,
+    _ctx: Arc<RvContextData>,
+) -> Action {
+    error!("{error}");
+    Action::requeue(Duration::from_secs(60))
+}
+
+pub async fn populate_initial_rvs(ctx: RvContextData) -> anyhow::Result<()> {
+    let mcps: Api<MachineConfigPool> = Api::all(ctx.client.clone());
+    for mcp in mcps.list(&ListParams::default()).await? {
+        handle_mcp(Arc::new(mcp), Arc::new(ctx.clone())).await?;
+    }
+    Ok(())
+}
+
+pub async fn launch_rv_mc_controller(ctx: RvContextData) {
+    let mcps: Api<MachineConfigPool> = Api::all(ctx.client.clone());
+    tokio::spawn(
+        Controller::new(mcps, watcher::Config::default())
+            .run::<_, RvContextData>(mc_reconcile, mc_error_policy, Arc::new(ctx))
+            .for_each(|res| async move {
+                match res {
+                    Ok(o) => info!("reconciled {o:?}"),
+                    Err(e) => info!("reconcile failed: {e:?}"),
+                }
+            }),
+    );
 }
 
 async fn job_reconcile(job: Arc<Job>, ctx: Arc<RvContextData>) -> Result<Action, Error> {
