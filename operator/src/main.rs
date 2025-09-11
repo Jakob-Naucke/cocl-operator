@@ -20,7 +20,7 @@ use kube::{
 };
 use log::{error, info, warn};
 
-use crds::{ApprovedImage, ConfidentialCluster};
+use crds::{ApprovedImage, ConfidentialCluster, MachineConfigPool};
 mod reference_values;
 mod register_server;
 mod trustee;
@@ -29,7 +29,7 @@ async fn reconcile(
     cocl: Arc<ConfidentialCluster>,
     client: Arc<Client>,
 ) -> Result<Action, operator::ControllerError> {
-    let name = cocl.metadata.name.as_deref().unwrap_or("<no name>");
+    let name = operator::name_or_default(&cocl.metadata);
     if cocl.metadata.deletion_timestamp.is_some() {
         info!("Registered deletion of ConfidentialCluster {name}");
         return Ok(Action::await_change());
@@ -89,6 +89,11 @@ async fn install_trustee_configuration(client: Client, cocl: &ConfidentialCluste
     let images: Api<ApprovedImage> = Api::default_namespaced(client.clone());
     let stream = images.watch(&Default::default(), "0").await?.boxed();
     tokio::spawn(reference_values::watch_images(stream, rv_ctx));
+
+    reference_values::launch_rv_mc_controller(client.clone()).await;
+    let mcps: Api<MachineConfigPool> = Api::all(client.clone());
+    let list = mcps.list(&Default::default()).await?;
+    tokio::spawn(reference_values::populate_initial_rvs(client.clone(), list));
 
     match trustee::generate_attestation_policy(client.clone(), owner_reference.clone()).await {
         Ok(_) => info!("Generate configmap for the attestation policy",),

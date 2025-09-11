@@ -13,7 +13,7 @@ use k8s_openapi::api::{
         PodTemplateSpec, Volume, VolumeMount,
     },
 };
-use kube::api::{DeleteParams, ObjectMeta, PostParams, WatchEvent};
+use kube::api::{DeleteParams, ObjectList, ObjectMeta, PostParams, WatchEvent};
 use kube::runtime::{
     controller::{Action, Controller},
     watcher,
@@ -30,7 +30,7 @@ use std::{
 };
 
 use crate::trustee::{self, get_image_pcrs};
-use crds::ApprovedImage;
+use crds::{ApprovedImage, ApprovedImageSpec, MachineConfig, MachineConfigPool};
 use operator::{
     ControllerError, RvContextData, controller_error_policy, controller_info, info_if_exists,
 };
@@ -44,6 +44,15 @@ const PCR_LABEL: &str = "org.coreos.pcrs";
 #[derive(Deserialize)]
 struct ComputePcrsOutput {
     pcrs: Vec<Pcr>,
+}
+
+/// Format container image name as RFC1035 (minus truncation) and give unique name
+fn image_rfc1035(image: &str) -> Result<String> {
+    // Hash for images that only differed beyond the truncation limit or in replaced characters
+    let replaced = image.replace(['.', ':', '/', '@', '_'], "-");
+    let hash = hash(MessageDigest::sha1(), image.as_bytes())?;
+    let hash_str = hex::encode(hash)[..10].to_string();
+    Ok(format!("{hash_str}-{replaced}"))
 }
 
 pub async fn create_pcrs_config_map(client: Client) -> Result<()> {
@@ -157,6 +166,58 @@ fn build_compute_pcrs_pod_spec(boot_image: &str, pcrs_compute_image: &str) -> Po
     }
 }
 
+async fn handle_mcp(mcp: Arc<MachineConfigPool>, client: Arc<Client>) -> anyhow::Result<()> {
+    let err = "MCP changed, but had no name";
+    let mcp_name = &mcp.metadata.name.clone().context(err)?;
+    let mut err = format!("MCP {mcp_name} changed, but had no configuration");
+    let config = &mcp.spec.configuration.clone().context(err)?;
+    err = format!("MCP {mcp_name} changed, but config had no name");
+    let config_name = &config.name.clone().context(err)?;
+
+    let mcs: Api<MachineConfig> = Api::all(Arc::unwrap_or_clone(client.clone()));
+    let mc = mcs.get(config_name).await?;
+    err = format!("MC {config_name} existed, but had no osImageUrl");
+    let url = mc.spec.os_image_url.context(err)?;
+
+    let image = ApprovedImage {
+        metadata: ObjectMeta {
+            name: Some(image_rfc1035(&url)?),
+            ..Default::default()
+        },
+        spec: ApprovedImageSpec { reference: url },
+    };
+    let images: Api<ApprovedImage> = Api::default_namespaced(Arc::unwrap_or_clone(client));
+    images.create(&Default::default(), &image).await?;
+    Ok(())
+}
+
+async fn mc_reconcile(
+    mcp: Arc<MachineConfigPool>,
+    client: Arc<Client>,
+) -> Result<Action, ControllerError> {
+    handle_mcp(mcp, client).await?;
+    Ok(Action::await_change())
+}
+
+pub async fn populate_initial_rvs(client: Client, mcps: ObjectList<MachineConfigPool>) {
+    for mcp in mcps {
+        let name = operator::name_or_default(&mcp.metadata);
+        match handle_mcp(Arc::new(mcp), Arc::new(client.clone())).await {
+            Ok(_) => info!("Set image of existing MCP {name} as approved"),
+            Err(e) => info!("Failed to set image of existing MCP {name}: {e}"),
+        }
+    }
+}
+
+pub async fn launch_rv_mc_controller(client: Client) {
+    let mcps: Api<MachineConfigPool> = Api::all(client.clone());
+    tokio::spawn(
+        Controller::new(mcps, watcher::Config::default())
+            .run(mc_reconcile, controller_error_policy, Arc::new(client))
+            .for_each(controller_info),
+    );
+}
+
 async fn job_reconcile(job: Arc<Job>, ctx: Arc<RvContextData>) -> Result<Action, ControllerError> {
     let err = "Job changed, but had no name";
     let name = &job.metadata.name.clone().context(err)?;
@@ -187,14 +248,9 @@ pub async fn launch_rv_job_controller(ctx: RvContextData) {
     );
 }
 
-async fn compute_fresh_pcrs(ctx: RvContextData, boot_image: &str) -> anyhow::Result<()> {
-    // Name job by sanitized image name, plus a hash to disambiguate
-    // tags that differed only beyond the truncation limit
-    let rfc1035_boot_image = boot_image.replace(['.', ':', '/', '@', '_'], "-");
-    let boot_image_hash = hash(MessageDigest::sha1(), boot_image.as_bytes())?;
-    let mut boot_image_hash_str = hex::encode(boot_image_hash);
-    boot_image_hash_str.truncate(10);
-    let mut job_name = format!("{PCR_COMMAND_NAME}-{boot_image_hash_str}-{rfc1035_boot_image}");
+async fn compute_fresh_pcrs(ctx: RvContextData, boot_image: &str) -> Result<()> {
+    let rfc1035_image_name = image_rfc1035(boot_image)?;
+    let mut job_name = format!("{PCR_COMMAND_NAME}-{rfc1035_image_name}");
     job_name.truncate(63);
 
     let pod_spec = build_compute_pcrs_pod_spec(boot_image, &ctx.pcrs_compute_image);
