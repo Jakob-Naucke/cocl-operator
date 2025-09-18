@@ -57,8 +57,9 @@ fn error_policy(_obj: Arc<ConfidentialCluster>, _error: &Error, _ctx: Arc<Contex
     Action::requeue(Duration::from_secs(60))
 }
 
-async fn install_trustee_configuration(client: Client, namespace: String) -> Result<()> {
-    let cocl = list_confidential_clusters(client.clone(), &namespace).await?;
+async fn install_trustee_configuration(client: Client) -> Result<()> {
+    let namespace = client.default_namespace();
+    let cocl = list_confidential_clusters(client.clone(), namespace).await?;
     let trustee_namespace = cocl.spec.trustee.namespace.clone();
 
     match trustee::generate_kbs_auth_public_key(
@@ -96,13 +97,12 @@ async fn install_trustee_configuration(client: Client, namespace: String) -> Res
 
     let rv_ctx = trustee::RvContextData {
         client: client.clone(),
-        operator_namespace: namespace.clone(),
         trustee_namespace: trustee_namespace.clone(),
         pcrs_compute_image: cocl.spec.pcrs_compute_image,
         rv_map: cocl.spec.trustee.reference_values.clone(),
     };
     reference_values::launch_rv_job_controller(rv_ctx.clone()).await;
-    match reference_values::create_pcrs_config_map(client.clone(), &namespace).await {
+    match reference_values::create_pcrs_config_map(client.clone(), namespace).await {
         Ok(_) => info!("Created bare configmap for PCRs"),
         Err(e) => error!("Failed to create the PCRs configmap: {e}"),
     }
@@ -192,7 +192,7 @@ async fn main() -> Result<()> {
     info!("Confidential clusters operator",);
     let cl = Api::<ConfidentialCluster>::namespaced(client.clone(), &namespace);
 
-    tokio::spawn(install_trustee_configuration(client.clone(), namespace));
+    tokio::spawn(install_trustee_configuration(client.clone()));
     Controller::new(cl, watcher::Config::default())
         .run::<_, ContextData>(reconcile, error_policy, context)
         .for_each(|res| async move {

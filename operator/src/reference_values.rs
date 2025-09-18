@@ -168,7 +168,7 @@ async fn job_reconcile(job: Arc<Job>, ctx: Arc<RvContextData>) -> Result<Action,
         info!("Job {name} changed, but had not completed");
         return Ok(Action::requeue(Duration::from_secs(300)));
     }
-    let jobs: Api<Job> = Api::namespaced(ctx.client.clone(), &ctx.operator_namespace);
+    let jobs: Api<Job> = Api::namespaced(ctx.client.clone(), ctx.client.default_namespace());
     jobs.delete(name, &DeleteParams::default())
         .await
         .map_err(Into::<anyhow::Error>::into)?;
@@ -182,7 +182,7 @@ fn job_error_policy(_obj: Arc<Job>, error: &Error, _ctx: Arc<RvContextData>) -> 
 }
 
 pub async fn launch_rv_job_controller(ctx: RvContextData) {
-    let jobs: Api<Job> = Api::namespaced(ctx.client.clone(), &ctx.operator_namespace);
+    let jobs: Api<Job> = Api::namespaced(ctx.client.clone(), ctx.client.default_namespace());
     let watcher = watcher::Config {
         label_selector: Some(format!("{JOB_LABEL_KEY}={PCR_COMMAND_NAME}")),
         ..Default::default()
@@ -242,7 +242,8 @@ async fn compute_fresh_pcrs(
 }
 
 pub async fn handle_new_image(ctx: RvContextData, boot_image: &str) -> anyhow::Result<()> {
-    let config_maps: Api<ConfigMap> = Api::namespaced(ctx.client.clone(), &ctx.operator_namespace);
+    let config_maps: Api<ConfigMap> =
+        Api::namespaced(ctx.client.clone(), ctx.client.default_namespace());
     let mut image_pcrs_map = config_maps.get(PCR_CONFIG_MAP).await?;
     let mut image_pcrs = get_image_pcrs(image_pcrs_map.clone())?;
     if image_pcrs.0.contains_key(boot_image) {
@@ -250,7 +251,7 @@ pub async fn handle_new_image(ctx: RvContextData, boot_image: &str) -> anyhow::R
     }
     let label = fetch_pcr_label(boot_image).await?;
     if label.is_none() {
-        let ns = &ctx.operator_namespace;
+        let ns = ctx.client.default_namespace();
         let comp_img = &ctx.pcrs_compute_image;
         return compute_fresh_pcrs(ctx.client.clone(), ns, boot_image, comp_img).await;
     }
@@ -274,7 +275,8 @@ pub async fn handle_new_image(ctx: RvContextData, boot_image: &str) -> anyhow::R
 
 #[allow(dead_code)]
 pub async fn disallow_image(ctx: RvContextData, boot_image: &str) -> anyhow::Result<()> {
-    let config_maps: Api<ConfigMap> = Api::namespaced(ctx.client.clone(), &ctx.operator_namespace);
+    let config_maps: Api<ConfigMap> =
+        Api::namespaced(ctx.client.clone(), ctx.client.default_namespace());
     let mut image_pcrs_map = config_maps.get(PCR_CONFIG_MAP).await?;
     let mut image_pcrs = get_image_pcrs(image_pcrs_map.clone())?;
     if image_pcrs.0.remove(boot_image).is_none() {
