@@ -14,6 +14,7 @@ use log::{error, info};
 use thiserror::Error;
 
 use crds::ConfidentialCluster;
+mod k8s_util;
 mod reference_values;
 mod trustee;
 
@@ -52,9 +53,6 @@ async fn list_confidential_clusters(
 
 async fn reconcile(_g: Arc<ConfidentialCluster>, _ctx: Arc<ContextData>) -> Result<Action, Error> {
     Ok(Action::requeue(Duration::from_secs(300)))
-}
-fn error_policy(_obj: Arc<ConfidentialCluster>, _error: &Error, _ctx: Arc<ContextData>) -> Action {
-    Action::requeue(Duration::from_secs(60))
 }
 
 async fn install_trustee_configuration(client: Client) -> Result<()> {
@@ -95,7 +93,7 @@ async fn install_trustee_configuration(client: Client) -> Result<()> {
         Err(e) => error!("Failed to create HTTPS certificates for the KBS: {e}"),
     }
 
-    let rv_ctx = trustee::RvContextData {
+    let rv_ctx = k8s_util::RvContextData {
         client: client.clone(),
         trustee_namespace: trustee_namespace.clone(),
         pcrs_compute_image: cocl.spec.pcrs_compute_image,
@@ -194,7 +192,7 @@ async fn main() -> Result<()> {
 
     tokio::spawn(install_trustee_configuration(client.clone()));
     Controller::new(cl, watcher::Config::default())
-        .run::<_, ContextData>(reconcile, error_policy, context)
+        .run::<_, ContextData>(reconcile, k8s_util::controller_error_policy, context)
         .for_each(|res| async move {
             match res {
                 Ok(o) => info!("reconciled {o:?}"),
