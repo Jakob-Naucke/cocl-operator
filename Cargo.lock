@@ -2539,6 +2539,7 @@ name = "register-server"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "clevis-pin-trustee-lib",
  "crds",
  "env_logger",
  "k8s-openapi",

@@ -3,12 +3,12 @@
 // SPDX-License-Identifier: MIT
 
 use clap::Parser;
+use clevis_pin_trustee_lib::{Config as ClevisConfig, Server as ClevisServer};
 use crds::Machine;
 use env_logger::Env;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::{api::ListParams, Api, Client};
 use log::{error, info};
-use serde::Serialize;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use uuid::Uuid;
@@ -16,23 +16,22 @@ use warp::Filter;
 
 #[derive(Parser)]
 #[command(name = "register-server")]
-#[command(about = "HTTP server that generates random UUIDs")]
+#[command(about = "HTTP server that generates Clevis PINs with random UUIDs")]
 struct Args {
     #[arg(short, long, default_value = "3030")]
     port: u16,
 
     #[arg(short, long, default_value = "default")]
     namespace: String,
-}
 
-#[derive(Serialize)]
-struct Metadata {
-    id: String,
+    #[arg(short, long)]
+    public_addr: String,
 }
 
 async fn register_handler(
     remote_addr: Option<SocketAddr>,
     namespace: String,
+    public_addr: String,
 ) -> Result<impl warp::Reply, Infallible> {
     let id = Uuid::new_v4().to_string();
     let client_ip = remote_addr
@@ -46,7 +45,14 @@ async fn register_handler(
         Err(e) => error!("Failed to create Machine: {e}"),
     }
 
-    let response = Metadata { id };
+    let response = ClevisConfig {
+        servers: vec![ClevisServer {
+            url: format!("http://{public_addr}"),
+            cert: "".to_string(),
+        }],
+        path: format!("default/{id}/root"),
+        initdata: format!("'uuid': '{id}'"),
+    };
     Ok(warp::reply::json(&response))
 }
 
@@ -100,6 +106,7 @@ async fn main() {
         .and(warp::get())
         .and(warp::addr::remote())
         .and(warp::any().map(move || args.namespace.clone()))
+        .and(warp::any().map(move || args.public_addr.clone()))
         .and_then(register_handler);
 
     let routes = register_route;

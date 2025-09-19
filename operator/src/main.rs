@@ -162,20 +162,6 @@ async fn install_trustee_configuration(client: Client) -> Result<()> {
         Err(e) => error!("Failed to create the KBS configuration: {e}"),
     }
 
-    // TODO replace this creation with a per-machine one.
-    // This secret's address is `default/machine/root`.
-    match trustee::generate_secret(
-        client.clone(),
-        &trustee_namespace,
-        &cocl.spec.trustee.kbs_config_name,
-        "machine",
-    )
-    .await
-    {
-        Ok(_) => info!("Generate test secret"),
-        Err(e) => error!("Failed to create test secret: {e}"),
-    }
-
     Ok(())
 }
 
@@ -190,6 +176,7 @@ async fn install_register_server(client: Client) -> Result<()> {
     match register_server::create_register_server_deployment(
         client.clone(),
         &cocl.spec.register_server_image,
+        &cocl.spec.trustee_addr,
     )
     .await
     {
@@ -201,6 +188,13 @@ async fn install_register_server(client: Client) -> Result<()> {
         Ok(_) => info!("Register server service created/updated successfully"),
         Err(e) => error!("Failed to create register server service: {e}"),
     }
+
+    let clevis_ctx = k8s_util::ClevisContextData {
+        client: client.clone(),
+        trustee_namespace: cocl.spec.trustee.namespace.clone(),
+        kbs_config: cocl.spec.trustee.kbs_config_name.clone(),
+    };
+    register_server::launch_keygen_controller(clevis_ctx).await;
 
     Ok(())
 }

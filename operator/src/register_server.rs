@@ -1,9 +1,11 @@
 // SPDX-FileCopyrightText: Alice Frosi <afrosi@redhat.com>
+// SPDX-FileCopyrightText: Jakob Naucke <jnaucke@redhat.com>
 //
 // SPDX-License-Identifier: MIT
 
 use anyhow::Result;
 use crds::Machine;
+use futures_util::StreamExt;
 use k8s_openapi::{
     api::{
         apps::v1::{Deployment, DeploymentSpec},
@@ -18,9 +20,16 @@ use k8s_openapi::{
         util::intstr::IntOrString,
     },
 };
+use kube::runtime::{
+    controller::{Action, Controller},
+    watcher,
+};
 use kube::{Api, Client, Resource};
 use log::info;
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
+
+use crate::k8s_util::{ClevisContextData, ControllerError, controller_error_policy};
+use crate::trustee;
 
 pub async fn create_register_server_rbac(client: Client) -> Result<()> {
     let name = "register-server";
@@ -121,7 +130,11 @@ pub async fn create_register_server_rbac(client: Client) -> Result<()> {
     Ok(())
 }
 
-pub async fn create_register_server_deployment(client: Client, image: &str) -> Result<()> {
+pub async fn create_register_server_deployment(
+    client: Client,
+    image: &str,
+    address: &str,
+) -> Result<()> {
     let name = "register-server";
     let namespace = client.default_namespace();
     let app_label = "register-server";
@@ -161,6 +174,8 @@ pub async fn create_register_server_deployment(client: Client, image: &str) -> R
                             "3030".to_string(),
                             "--namespace".to_string(),
                             namespace.to_string(),
+                            "--public-addr".to_string(),
+                            address.to_string(),
                         ]),
                         ..Default::default()
                     }],
@@ -232,4 +247,28 @@ pub async fn create_register_server_service(client: Client) -> Result<()> {
 
     info!("Register server service created/updated successfully");
     Ok(())
+}
+
+async fn keygen_reconcile(
+    machine: Arc<Machine>,
+    ctx: Arc<ClevisContextData>,
+) -> Result<Action, ControllerError> {
+    let id = &machine.spec.id;
+    trustee::generate_secret(Arc::<ClevisContextData>::unwrap_or_clone(ctx), id).await?;
+    Ok(Action::await_change())
+}
+
+pub async fn launch_keygen_controller(ctx: ClevisContextData) {
+    let machines: Api<Machine> =
+        Api::namespaced(ctx.client.clone(), ctx.client.default_namespace());
+    tokio::spawn(
+        Controller::new(machines, watcher::Config::default())
+            .run(keygen_reconcile, controller_error_policy, Arc::new(ctx))
+            .for_each(|res| async move {
+                match res {
+                    Ok(o) => info!("reconciled {o:?}"),
+                    Err(e) => info!("reconcile failed: {e:?}"),
+                }
+            }),
+    );
 }
