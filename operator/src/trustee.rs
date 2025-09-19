@@ -8,6 +8,7 @@ use kube::{Api, Client};
 use log::info;
 use openssl::pkey::PKey;
 use serde::{Serialize, Serializer};
+use serde_json::{Value::Array as JsonArray, Value::String as JsonString};
 use std::{collections::BTreeMap, fs};
 
 use crds::{KbsConfig, KbsConfigSpec, Trustee};
@@ -122,7 +123,7 @@ pub async fn generate_kbs_https_certificate(client: Client, namespace: &str) -> 
             k8s_openapi::ByteString("Zm9vYmFyCg==".into()),
         )]);
         let secret = Secret {
-            metadata: kube::api::ObjectMeta {
+            metadata: ObjectMeta {
                 name: Some(name.to_string()),
                 namespace: Some(namespace.to_string()),
                 ..Default::default()
@@ -155,7 +156,7 @@ pub async fn generate_kbs_configurations(
     ] {
         let data = BTreeMap::from([(filename.to_string(), content.to_string())]);
         let config_map = ConfigMap {
-            metadata: kube::api::ObjectMeta {
+            metadata: ObjectMeta {
                 name: Some(configmap.to_string()),
                 namespace: Some(namespace.to_string()),
                 ..Default::default()
@@ -179,15 +180,13 @@ pub async fn recompute_reference_values(ctx: RvContextData) -> anyhow::Result<()
     let image_pcrs_map = operator_config_maps.get(PCR_CONFIG_MAP).await?;
     let image_pcrs = get_image_pcrs(image_pcrs_map)?;
     // TODO many grub+shim:many OS image recompute once supported
-    let mut reference_values_in = BTreeMap::from([(
-        "svn".to_string(),
-        vec![serde_json::Value::String("1".to_string())],
-    )]);
+    let mut reference_values_in =
+        BTreeMap::from([("svn".to_string(), vec![JsonString("1".to_string())])]);
     for pcr in image_pcrs.0.values().flat_map(|v| &v.pcrs) {
         reference_values_in
             .entry(format!("pcr{}", pcr.id))
             .or_default()
-            .push(serde_json::Value::String(pcr.value.clone()));
+            .push(JsonString(pcr.value.clone()));
     }
     let reference_values: Vec<_> = reference_values_in
         .iter()
@@ -195,7 +194,7 @@ pub async fn recompute_reference_values(ctx: RvContextData) -> anyhow::Result<()
             version: "0.1.0".to_string(),
             name: format!("tpm_{name}"),
             expiration: Utc::now() + TimeDelta::days(365),
-            value: serde_json::Value::Array(values.to_vec()),
+            value: JsonArray(values.to_vec()),
         })
         .collect();
     let reference_values_json = serde_json::to_string(&reference_values)?;
@@ -260,7 +259,7 @@ pub async fn generate_secret(
     let data = BTreeMap::from([("root".to_string(), secret_data)]);
 
     let secret = Secret {
-        metadata: kube::api::ObjectMeta {
+        metadata: ObjectMeta {
             name: Some(id.to_string()),
             namespace: Some(namespace.to_string()),
             ..Default::default()
@@ -288,17 +287,17 @@ pub async fn generate_secret(
     let path = jsonptr::PointerBuf::parse("/spec/kbsSecretResources")?;
     let expected_secrets = existing_secrets
         .iter()
-        .map(|s| serde_json::Value::String(s.clone()))
+        .map(|s| JsonString(s.clone()))
         .collect();
     let test_patch = PatchOperation::Test(TestOperation {
         path: path.clone(),
-        value: serde_json::Value::Array(expected_secrets),
+        value: JsonArray(expected_secrets),
     });
 
-    let value = serde_json::Value::String(id.to_string());
+    let value = JsonString(id.to_string());
     let add_patch = PatchOperation::Add(AddOperation {
         path,
-        value: serde_json::Value::Array(vec![value]),
+        value: JsonArray(vec![value]),
     });
 
     let json_patch = json_patch::Patch(vec![test_patch, add_patch]);
@@ -321,7 +320,7 @@ pub async fn generate_resource_policy(
     data.insert("policy.rego".to_string(), policy_rego.to_string());
 
     let config_map = ConfigMap {
-        metadata: kube::api::ObjectMeta {
+        metadata: ObjectMeta {
             name: Some(name.to_string()),
             namespace: Some(namespace.to_string()),
             ..Default::default()
@@ -349,7 +348,7 @@ pub async fn generate_attestation_policy(
     data.insert("default_cpu.rego".to_string(), policy_rego.to_string());
 
     let config_map = ConfigMap {
-        metadata: kube::api::ObjectMeta {
+        metadata: ObjectMeta {
             name: Some(name.to_string()),
             namespace: Some(namespace.to_string()),
             ..Default::default()
@@ -396,7 +395,7 @@ pub async fn generate_kbs(
     ]);
 
     let kbs_config = KbsConfig {
-        metadata: kube::api::ObjectMeta {
+        metadata: ObjectMeta {
             name: Some(trustee.kbs_config_name.clone()),
             namespace: Some(namespace.to_string()),
             labels: Some(labels),
