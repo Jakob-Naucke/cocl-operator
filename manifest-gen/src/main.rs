@@ -5,7 +5,7 @@
 
 use anyhow::Result;
 use clap::Parser;
-use crds::{ConfidentialCluster, ConfidentialClusterSpec, Machine};
+use crds::{ApprovedImage, ConfidentialCluster, ConfidentialClusterSpec, Machine};
 use k8s_openapi::{
     api::{
         apps::v1::Deployment,
@@ -210,8 +210,11 @@ fn generate_operator(args: &Args) -> Result<()> {
                 ..Default::default()
             },
             PolicyRule {
-                api_groups: Some(vec!["confidential-containers.io".to_string()]),
-                resources: Some(vec!["machines".to_string()]),
+                api_groups: Some(vec![Machine::group(&()).to_string()]),
+                resources: Some(vec![
+                    Machine::plural(&()).to_string(),
+                    ApprovedImage::plural(&()).to_string(),
+                ]),
                 verbs: vec![
                     "create".to_string(),
                     "get".to_string(),
@@ -323,15 +326,16 @@ fn generate_operator(args: &Args) -> Result<()> {
 }
 
 pub fn generate_crds(args: &Args) -> Result<()> {
-    let confidential_cluster_crd = ConfidentialCluster::crd();
-    let machine_crd = Machine::crd();
-
     let output_path = args.output_dir.join("confidential_cluster_crd.yaml");
-
-    let confidential_cluster_yaml = serde_yaml::to_string(&confidential_cluster_crd)?;
-    let machine_yaml = serde_yaml::to_string(&machine_crd)?;
-
-    let combined_yaml = format!("{confidential_cluster_yaml}\n---\n{machine_yaml}");
+    let combined_yaml = [
+        ConfidentialCluster::crd(),
+        Machine::crd(),
+        ApprovedImage::crd(),
+    ]
+    .iter()
+    .map(|c| serde_yaml::to_string(&c).map_err(Into::into))
+    .collect::<Result<Vec<_>>>()?
+    .join("\n---\n");
 
     let mut file = File::create(&output_path)?;
     file.write_all(combined_yaml.as_bytes())?;

@@ -36,3 +36,15 @@ pub struct MachineSpec {
     pub id: String,
     pub address: String,
 }
+
+#[derive(CustomResource, Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[kube(
+    group = "confidential-containers.io",
+    version = "v1alpha1",
+    kind = "ApprovedImage",
+    namespaced,
+    plural = "approvedimages"
+)]
+pub struct ApprovedImageSpec {
+    pub reference: String,
+}
