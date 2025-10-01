@@ -11,6 +11,5 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-chrono.workspace = true
 compute-pcrs-lib.workspace = true
 serde.workspace = true

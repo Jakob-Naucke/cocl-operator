@@ -71,7 +71,7 @@ fn recompute_reference_values(image_pcrs: ImagePcrs) -> Vec<ReferenceValue> {
     // TODO many grub+shim:many OS image recompute once supported
     let mut reference_values_in =
         BTreeMap::from([("svn".to_string(), vec![JsonString("1".to_string())])]);
-    for pcr in image_pcrs.0.values().flat_map(|v| &v.pcrs) {
+    for pcr in image_pcrs.0.values().flatten() {
         reference_values_in
             .entry(format!("pcr{}", pcr.id))
             .or_default()

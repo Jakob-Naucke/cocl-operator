@@ -4,7 +4,6 @@
 // SPDX-License-Identifier: MIT
 
 use anyhow::{Context, Result};
-use chrono::Utc;
 use clap::Parser;
 use compute_pcrs_lib::*;
 use k8s_openapi::api::core::v1::ConfigMap;
@@ -54,12 +53,7 @@ async fn main() -> Result<()> {
         .get(PCR_CONFIG_FILE)
         .context("Image PCRs data existed, but had no file")?;
     let mut image_pcrs: ImagePcrs = serde_json::from_str(image_pcrs_str)?;
-
-    let image_pcr = ImagePcr {
-        first_seen: Utc::now(),
-        pcrs,
-    };
-    image_pcrs.0.insert(args.image, image_pcr);
+    image_pcrs.0.insert(args.image, pcrs);
 
     let image_pcrs_json = serde_json::to_string(&image_pcrs)?;
     let data = BTreeMap::from([(PCR_CONFIG_FILE.to_string(), image_pcrs_json.to_string())]);

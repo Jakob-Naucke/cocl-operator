@@ -4,7 +4,6 @@
 // SPDX-License-Identifier: MIT
 
 use anyhow::{Context, Result};
-use chrono::Utc;
 use compute_pcrs_lib::Pcr;
 use futures_util::StreamExt;
 use k8s_openapi::api::{
@@ -233,14 +232,10 @@ pub async fn handle_new_image(ctx: RvContextData, boot_image: &str) -> Result<()
         return compute_fresh_pcrs(ctx, boot_image).await;
     }
 
-    let image_pcr = ImagePcr {
-        first_seen: Utc::now(),
-        pcrs: label.unwrap(),
-    };
     // Non-goal: Support tags whose referenced versions change (e.g. `latest`).
     // This would introduce hard-to-define behavior for disallowing older versions that were
     // introduced as a tag that is still allowed.
-    image_pcrs.0.insert(boot_image.to_string(), image_pcr);
+    image_pcrs.0.insert(boot_image.to_string(), label.unwrap());
     let image_pcrs_json = serde_json::to_string(&image_pcrs)?;
     let data = BTreeMap::from([(PCR_CONFIG_FILE.to_string(), image_pcrs_json.to_string())]);
     image_pcrs_map.data = Some(data);
