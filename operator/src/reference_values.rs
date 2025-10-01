@@ -5,7 +5,7 @@
 
 use anyhow::{Context, Result};
 use compute_pcrs_lib::Pcr;
-use futures_util::StreamExt;
+use futures_util::{Stream, StreamExt, TryStreamExt};
 use k8s_openapi::api::{
     batch::v1::{Job, JobSpec},
     core::v1::{
@@ -13,20 +13,24 @@ use k8s_openapi::api::{
         PodTemplateSpec, Volume, VolumeMount,
     },
 };
-use kube::api::{DeleteParams, ObjectMeta, PostParams};
+use kube::api::{DeleteParams, ObjectMeta, PostParams, WatchEvent};
 use kube::runtime::{
     controller::{Action, Controller},
     watcher,
 };
 use kube::{Api, Client};
-use log::info;
+use log::{error, info, warn};
 use oci_client::secrets::RegistryAuth;
 use oci_spec::image::ImageConfiguration;
 use openssl::hash::{MessageDigest, hash};
 use serde::Deserialize;
-use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    boxed::Box, collections::BTreeMap, marker::Send, path::PathBuf, pin::Pin, sync::Arc,
+    time::Duration,
+};
 
 use crate::trustee::{self, get_image_pcrs};
+use crds::ApprovedImage;
 use operator::{
     ControllerError, RvContextData, controller_error_policy, controller_info, info_if_exists,
 };
@@ -220,7 +224,7 @@ async fn compute_fresh_pcrs(ctx: RvContextData, boot_image: &str) -> anyhow::Res
     Ok(())
 }
 
-pub async fn handle_new_image(ctx: RvContextData, boot_image: &str) -> Result<()> {
+async fn handle_new_image(ctx: RvContextData, boot_image: &str) -> Result<()> {
     let config_maps: Api<ConfigMap> = Api::default_namespaced(ctx.client.clone());
     let mut image_pcrs_map = config_maps.get(PCR_CONFIG_MAP).await?;
     let mut image_pcrs = get_image_pcrs(image_pcrs_map.clone())?;
@@ -245,8 +249,7 @@ pub async fn handle_new_image(ctx: RvContextData, boot_image: &str) -> Result<()
     trustee::update_reference_values(ctx).await
 }
 
-#[allow(dead_code)]
-pub async fn disallow_image(ctx: RvContextData, boot_image: &str) -> Result<()> {
+async fn disallow_image(ctx: RvContextData, boot_image: &str) -> Result<()> {
     let config_maps: Api<ConfigMap> = Api::default_namespaced(ctx.client.clone());
     let mut image_pcrs_map = config_maps.get(PCR_CONFIG_MAP).await?;
     let mut image_pcrs = get_image_pcrs(image_pcrs_map.clone())?;
@@ -261,4 +264,32 @@ pub async fn disallow_image(ctx: RvContextData, boot_image: &str) -> Result<()> 
         .replace(PCR_CONFIG_MAP, &PostParams::default(), &image_pcrs_map)
         .await?;
     trustee::update_reference_values(ctx).await
+}
+
+pub async fn watch_images(
+    mut stream: Pin<
+        Box<dyn Stream<Item = std::result::Result<WatchEvent<ApprovedImage>, kube::Error>> + Send>,
+    >,
+    ctx: RvContextData,
+) {
+    loop {
+        match stream.try_next().await {
+            Ok(Some(WatchEvent::Added(s))) | Ok(Some(WatchEvent::Modified(s))) => {
+                match handle_new_image(ctx.clone(), &s.spec.reference).await {
+                    Ok(_) => info!("Added PCRs for image {}", s.spec.reference),
+                    Err(e) => error!("Failed to add PCRs for image {}: {e}", s.spec.reference),
+                }
+            }
+            Ok(Some(WatchEvent::Deleted(s))) => {
+                match disallow_image(ctx.clone(), &s.spec.reference).await {
+                    Ok(_) => info!("Disallowed image {}", s.spec.reference),
+                    Err(e) => error!("Failed to disallow image {}: {e}", s.spec.reference),
+                }
+            }
+            Ok(Some(WatchEvent::Error(e))) => warn!("Error watching ApprovedImages: {e}"),
+            Ok(Some(_)) => {}
+            Err(e) => warn!("Error receiving ApprovedImages event: {e}"),
+            Ok(None) => return,
+        }
+    }
 }

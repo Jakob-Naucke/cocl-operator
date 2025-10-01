@@ -20,12 +20,10 @@ use kube::{
 };
 use log::{error, info, warn};
 
-use crds::ConfidentialCluster;
+use crds::{ApprovedImage, ConfidentialCluster};
 mod reference_values;
 mod register_server;
 mod trustee;
-
-const BOOT_IMAGE: &str = "quay.io/fedora/fedora-coreos:42.20250705.3.0";
 
 async fn reconcile(
     cocl: Arc<ConfidentialCluster>,
@@ -88,13 +86,9 @@ async fn install_trustee_configuration(client: Client, cocl: &ConfidentialCluste
         Err(e) => error!("Failed to create the PCRs configmap: {e}"),
     }
 
-    // TODO machine config input
-    match reference_values::handle_new_image(rv_ctx, BOOT_IMAGE).await {
-        Ok(_) => info!("Computed or retrieved reference values for image: {BOOT_IMAGE}",),
-        Err(e) => {
-            error!("Failed to compute or retrieve reference values for image {BOOT_IMAGE}: {e}",)
-        }
-    }
+    let images: Api<ApprovedImage> = Api::default_namespaced(client.clone());
+    let stream = images.watch(&Default::default(), "0").await?.boxed();
+    tokio::spawn(reference_values::watch_images(stream, rv_ctx));
 
     match trustee::generate_attestation_policy(client.clone(), owner_reference.clone()).await {
         Ok(_) => info!("Generate configmap for the attestation policy",),
