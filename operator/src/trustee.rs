@@ -7,7 +7,6 @@ use anyhow::{Context, Result};
 use base64::{Engine as _, engine::general_purpose};
 use chrono::{DateTime, TimeDelta, Utc};
 use clevis_pin_trustee_lib::Key as ClevisKey;
-use json_patch::{AddOperation, PatchOperation, TestOperation};
 use k8s_openapi::api::apps::v1::{Deployment, DeploymentSpec};
 use k8s_openapi::api::core::v1::{
     ConfigMap, ConfigMapVolumeSource, Container, ContainerPort, EmptyDirVolumeSource, PodSpec,
@@ -18,7 +17,7 @@ use k8s_openapi::apimachinery::pkg::{
     apis::meta::v1::{LabelSelector, OwnerReference},
     util::intstr::IntOrString,
 };
-use kube::api::{ObjectMeta, Patch};
+use kube::api::ObjectMeta;
 use kube::{Api, Client};
 use log::info;
 use operator::{RvContextData, info_if_exists};
@@ -91,25 +90,21 @@ pub async fn update_reference_values(ctx: RvContextData) -> Result<()> {
     let image_pcrs_map = operator_config_maps.get(PCR_CONFIG_MAP).await?;
     let reference_values = recompute_reference_values(get_image_pcrs(image_pcrs_map)?);
 
-    let config_maps: Api<ConfigMap> = Api::default_namespaced(ctx.client);
+    let config_maps: Api<ConfigMap> = Api::default_namespaced(ctx.client.clone());
     let existing_data = config_maps.get(TRUSTEE_DATA_MAP).await?;
     let err = format!("ConfigMap {TRUSTEE_DATA_MAP} existed, but had no data");
     let existing_data_map = existing_data.data.context(err)?;
     let err = format!("ConfigMap {TRUSTEE_DATA_MAP} existed, but had no reference values");
     let existing_rvs = existing_data_map.get(REFERENCE_VALUES_FILE).context(err)?;
 
-    let path = jsonptr::PointerBuf::parse(format!("/data/{REFERENCE_VALUES_FILE}"))?;
-    let test_patch = PatchOperation::Test(TestOperation {
-        path: path.clone(),
-        value: JsonString(existing_rvs.clone()),
-    });
-    let add_patch = PatchOperation::Add(AddOperation {
-        path,
-        value: JsonString(serde_json::to_string(&reference_values)?),
-    });
-    let patch: Patch<ConfigMap> = Patch::Json(json_patch::Patch(vec![test_patch, add_patch]));
-    let params = &Default::default();
-    config_maps.patch(TRUSTEE_DATA_MAP, params, &patch).await?;
+    operator::patch::<ConfigMap>(
+        ctx.client.clone(),
+        TRUSTEE_DATA_MAP,
+        &format!("/data/{REFERENCE_VALUES_FILE}"),
+        existing_rvs.clone(),
+        serde_json::to_string(&reference_values)?,
+    )
+    .await?;
     info!("Recomputed reference values");
     Ok(())
 }

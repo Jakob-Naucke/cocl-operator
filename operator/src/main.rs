@@ -20,7 +20,7 @@ use kube::{
 };
 use log::{error, info, warn};
 
-use crds::ConfidentialCluster;
+use crds::{ConfidentialCluster, ConfidentialClusterStatus};
 mod reference_values;
 mod register_server;
 mod trustee;
@@ -31,18 +31,26 @@ async fn reconcile(
     cocl: Arc<ConfidentialCluster>,
     client: Arc<Client>,
 ) -> Result<Action, operator::ControllerError> {
-    let name = operator::name_or_default(&cocl.metadata);
+    let kube_client = Arc::unwrap_or_clone(client);
+    let namespace = kube_client.default_namespace();
+    let name = &cocl.metadata.name;
+    if name.is_none() {
+        warn!(
+            "A ConfidentialCluster was found in {namespace}, but it had no name. \
+               cocl-operator does not support unnamed ConfidentialClusters. Requeueing...",
+        );
+        return Ok(Action::requeue(Duration::from_secs(60)));
+    }
+    let name = name.as_ref().unwrap();
     if cocl.metadata.deletion_timestamp.is_some() {
         info!("Registered deletion of ConfidentialCluster {name}");
         return Ok(Action::await_change());
     }
-    let kube_client = Arc::unwrap_or_clone(client);
 
     let cocls: Api<ConfidentialCluster> = Api::default_namespaced(kube_client.clone());
     let list = cocls.list(&Default::default()).await;
     let cocl_list = list.map_err(Into::<anyhow::Error>::into)?;
     if cocl_list.items.len() > 1 {
-        let namespace = kube_client.default_namespace();
         warn!(
             "More than one ConfidentialCluster found in namespace {namespace}. \
               cocl-operator does not support more than one ConfidentialCluster. Requeueing...",
@@ -51,6 +59,24 @@ async fn reconcile(
     }
 
     info!("Setting up ConfidentialCluster {name}");
+
+    let mut existing_or = cocl
+        .status
+        .as_ref()
+        .map(|s| serde_json::to_string(&s))
+        .transpose()
+        .map_err(Into::<anyhow::Error>::into)?;
+    let existing = existing_or.get_or_insert_default().to_string();
+    let new = serde_json::to_string(&ConfidentialClusterStatus {
+        phase: crds::ConfidentialClusterPhase::Deploying,
+        conditions: Vec::new(),
+    })
+    .map_err(Into::<anyhow::Error>::into)?;
+    operator::patch::<ConfidentialCluster>(kube_client.clone(), name, "/status", existing, new)
+        .await?;
+
+    // TODO other statuses but try this first
+
     install_trustee_configuration(kube_client.clone(), &cocl).await?;
     install_register_server(kube_client, &cocl).await?;
     Ok(Action::await_change())

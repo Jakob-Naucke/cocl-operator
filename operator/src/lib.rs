@@ -8,10 +8,15 @@
 //
 // Use in other crates is not an intended purpose.
 
+use json_patch::{AddOperation, PatchOperation, TestOperation};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
-use kube::api::ObjectMeta;
+use k8s_openapi::NamespaceResourceScope;
+use kube::api::{ObjectMeta, Patch};
+use kube::{Api, Resource};
 use kube::{Client, runtime::controller::Action};
 use log::info;
+use serde::{Deserialize, Serialize};
+use serde_json::Value::String as JsonString;
 use std::fmt::{Debug, Display};
 use std::{sync::Arc, time::Duration};
 
@@ -42,6 +47,33 @@ pub async fn controller_info<T: Debug, E: Debug>(res: Result<T, E>) {
 
 pub fn name_or_default(meta: &ObjectMeta) -> String {
     meta.name.clone().unwrap_or("<no name>".to_string())
+}
+
+pub async fn patch<
+    T: Clone + Debug + Resource<Scope = NamespaceResourceScope> + Serialize + for<'de> Deserialize<'de>,
+>(
+    client: Client,
+    target: &str,
+    path: &str,
+    existing: String,
+    new: String,
+) -> anyhow::Result<()>
+where
+    <T as Resource>::DynamicType: Default,
+{
+    let json_path = jsonptr::PointerBuf::parse(path)?;
+    let test_patch = PatchOperation::Test(TestOperation {
+        path: json_path.clone(),
+        value: JsonString(existing),
+    });
+    let add_patch = PatchOperation::Add(AddOperation {
+        path: json_path,
+        value: JsonString(new),
+    });
+    let patch: Patch<T> = Patch::Json(json_patch::Patch(vec![test_patch, add_patch]));
+    let api: Api<T> = Api::default_namespaced(client);
+    api.patch(target, &Default::default(), &patch).await?;
+    Ok(())
 }
 
 #[macro_export]
