@@ -35,6 +35,7 @@ const REFERENCE_VALUES_FILE: &str = "reference-values.json";
 
 const TRUSTEE_DATA_MAP: &str = "trustee-data";
 const ATT_POLICY_MAP: &str = "attestation-policy";
+const TRUSTED_AKS_MAP: &str = "trusted-aks";
 const DEPLOYMENT_NAME: &str = "trustee-deployment";
 const INTERNAL_KBS_PORT: i32 = 8080;
 
@@ -68,8 +69,7 @@ pub fn get_image_pcrs(image_pcrs_map: ConfigMap) -> Result<ImagePcrs> {
 
 fn recompute_reference_values(image_pcrs: ImagePcrs) -> Vec<ReferenceValue> {
     // TODO many grub+shim:many OS image recompute once supported
-    let mut reference_values_in =
-        BTreeMap::from([("svn".to_string(), vec![JsonString("1".to_string())])]);
+    let mut reference_values_in: BTreeMap<String, Vec<serde_json::Value>> = BTreeMap::new();
     for pcr in image_pcrs.0.values().flat_map(|v| &v.pcrs) {
         reference_values_in
             .entry(format!("pcr{}", pcr.id))
@@ -213,6 +213,27 @@ pub async fn generate_attestation_policy(
     Ok(())
 }
 
+pub async fn create_aks_config_map(client: Client, owner_reference: OwnerReference) -> Result<()> {
+    let empty_data = BTreeMap::from([(
+        PCR_CONFIG_FILE.to_string(),
+        serde_json::to_string(&ImagePcrs::default())?,
+    )]);
+    let config_maps: Api<ConfigMap> = Api::default_namespaced(client);
+    let config_map = ConfigMap {
+        metadata: ObjectMeta {
+            name: Some(TRUSTED_AKS_MAP.to_string()),
+            owner_references: Some(vec![owner_reference]),
+            ..Default::default()
+        },
+        data: Some(empty_data),
+        ..Default::default()
+    };
+    let create = config_maps.create(&Default::default(), &config_map).await;
+    info_if_exists!(create, "ConfigMap", TRUSTED_AKS_MAP);
+
+    Ok(())
+}
+
 pub async fn generate_trustee_data(client: Client, owner_reference: OwnerReference) -> Result<()> {
     let kbs_config = include_str!("kbs-config.toml");
     let policy_rego = include_str!("resource.rego");
@@ -220,7 +241,7 @@ pub async fn generate_trustee_data(client: Client, owner_reference: OwnerReferen
     let data = BTreeMap::from([
         ("kbs-config.toml".to_string(), kbs_config.to_string()),
         ("policy.rego".to_string(), policy_rego.to_string()),
-        (REFERENCE_VALUES_FILE.to_string(), "{}".to_string()),
+        (REFERENCE_VALUES_FILE.to_string(), "[]".to_string()),
     ]);
 
     let config_map = ConfigMap {
@@ -274,7 +295,7 @@ pub async fn generate_kbs_service(
     Ok(())
 }
 
-fn generate_kbs_volume_templates() -> [(&'static str, &'static str, Volume); 3] {
+fn generate_kbs_volume_templates() -> [(&'static str, &'static str, Volume); 4] {
     [
         (
             ATT_POLICY_MAP,
@@ -304,6 +325,17 @@ fn generate_kbs_volume_templates() -> [(&'static str, &'static str, Volume); 3] 
             Volume {
                 empty_dir: Some(EmptyDirVolumeSource {
                     medium: Some("Memory".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        ),
+        (
+            TRUSTED_AKS_MAP,
+            "/etc/tpm/trusted_ak_keys",
+            Volume {
+                config_map: Some(ConfigMapVolumeSource {
+                    name: TRUSTED_AKS_MAP.to_string(),
                     ..Default::default()
                 }),
                 ..Default::default()

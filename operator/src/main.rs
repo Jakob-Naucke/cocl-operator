@@ -104,6 +104,11 @@ async fn install_trustee_configuration(client: Client, cocl: &ConfidentialCluste
         Err(e) => error!("Failed to create the attestation policy configmap: {e}"),
     }
 
+    match trustee::create_aks_config_map(client.clone(), owner_reference.clone()).await {
+        Ok(_) => info!("Generate configmap for trusted attestation keys",),
+        Err(e) => error!("Failed to create the trusted attestation keys configmap: {e}"),
+    }
+
     let name = operator::name_or_default(&cocl.metadata);
     let err = format!("ConfidentialCluster {name} did not specify a Trustee KBS port");
     let kbs_port = cocl.spec.trustee_kbs_port.context(err)?;
