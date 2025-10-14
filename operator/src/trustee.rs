@@ -486,15 +486,21 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_rvs_success() {
-        let clos = |req: &Option<Request<_>>| match req {
-            Some(r) if r.uri().path().contains(PCR_CONFIG_MAP) => Ok(dummy_pcrs_map()),
-            _ => Ok(ConfigMap {
-                data: Some(BTreeMap::from([(
-                    REFERENCE_VALUES_FILE.to_string(),
-                    "[]".to_string(),
-                )])),
-                ..Default::default()
-            }),
+        let clos = |req: &Request<_>| match req {
+            r if r.uri().path().contains(PCR_CONFIG_MAP) => {
+                Ok(serde_json::to_string(&dummy_pcrs_map()).unwrap())
+            }
+            r if r.uri().path().contains(TRUSTEE_DATA_MAP) => {
+                Ok(serde_json::to_string(&ConfigMap {
+                    data: Some(BTreeMap::from([(
+                        REFERENCE_VALUES_FILE.to_string(),
+                        "[]".to_string(),
+                    )])),
+                    ..Default::default()
+                })
+                .unwrap())
+            }
+            _ => panic!("unexpected API interaction: {req:?}"),
         };
         let ctx = generate_rv_ctx(MockClient::new(clos, "test".to_string()).into_client());
         assert!(update_reference_values(ctx).await.is_ok());
@@ -502,11 +508,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_rvs_no_pcr_map() {
-        let clos = |req: &Option<Request<_>>| match req {
-            Some(r) if r.uri().path().contains(PCR_CONFIG_MAP) && r.method() == Method::GET => {
-                Err::<ConfigMap, _>(StatusCode::NOT_FOUND)
+        let clos = |req: &Request<_>| match req {
+            r if r.uri().path().contains(PCR_CONFIG_MAP) && r.method() == Method::GET => {
+                Err(StatusCode::NOT_FOUND)
             }
-            None => Ok(ConfigMap::default()),
             _ => panic!("unexpected API interaction: {req:?}"),
         };
         let ctx = generate_rv_ctx(MockClient::new(clos, "test".to_string()).into_client());
@@ -515,12 +520,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_rvs_no_trustee_map() {
-        let clos = |req: &Option<Request<_>>| match req {
-            Some(r) if r.uri().path().contains(PCR_CONFIG_MAP) => Ok(dummy_pcrs_map()),
-            Some(r) if r.uri().path().contains(TRUSTEE_DATA_MAP) && r.method() == Method::GET => {
-                Err::<ConfigMap, _>(StatusCode::NOT_FOUND)
+        let clos = |req: &Request<_>| match req {
+            r if r.uri().path().contains(PCR_CONFIG_MAP) => {
+                Ok(serde_json::to_string(&dummy_pcrs_map()).unwrap())
             }
-            None => Ok(ConfigMap::default()),
+            r if r.uri().path().contains(TRUSTEE_DATA_MAP) && r.method() == Method::GET => {
+                Err(StatusCode::NOT_FOUND)
+            }
             _ => panic!("unexpected API interaction: {req:?}"),
         };
         let ctx = generate_rv_ctx(MockClient::new(clos, "test".to_string()).into_client());
@@ -529,9 +535,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_rvs_no_trustee_data() {
-        let clos = |req: &Option<Request<_>>| match req {
-            Some(r) if r.uri().path().contains(PCR_CONFIG_MAP) => Ok(dummy_pcrs_map()),
-            _ => Ok(ConfigMap::default()),
+        let clos = |req: &Request<_>| match req {
+            r if r.uri().path().contains(PCR_CONFIG_MAP) => {
+                Ok(serde_json::to_string(&dummy_pcrs_map()).unwrap())
+            }
+            r if r.uri().path().contains(TRUSTEE_DATA_MAP) => {
+                Ok(serde_json::to_string(&ConfigMap::default()).unwrap())
+            }
+            _ => panic!("unexpected API interaction: {req:?}"),
         };
         let ctx = generate_rv_ctx(MockClient::new(clos, "test".to_string()).into_client());
         let err = update_reference_values(ctx).await.err().unwrap();
@@ -540,12 +551,18 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_rvs_no_file() {
-        let clos = |req: &Option<Request<_>>| match req {
-            Some(r) if r.uri().path().contains(PCR_CONFIG_MAP) => Ok(dummy_pcrs_map()),
-            _ => Ok(ConfigMap {
-                data: Some(BTreeMap::new()),
-                ..Default::default()
-            }),
+        let clos = |req: &Request<_>| match req {
+            r if r.uri().path().contains(PCR_CONFIG_MAP) => {
+                Ok(serde_json::to_string(&dummy_pcrs_map()).unwrap())
+            }
+            r if r.uri().path().contains(TRUSTEE_DATA_MAP) => {
+                Ok(serde_json::to_string(&ConfigMap {
+                    data: Some(BTreeMap::new()),
+                    ..Default::default()
+                })
+                .unwrap())
+            }
+            _ => panic!("unexpected API interaction: {req:?}"),
         };
         let ctx = generate_rv_ctx(MockClient::new(clos, "test".to_string()).into_client());
         let err = update_reference_values(ctx).await.err().unwrap();
@@ -576,18 +593,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_mount_secret_success() {
-        let clos = |_: &_| Ok(dummy_deployment());
+        let clos = |_: &_| Ok(serde_json::to_string(&dummy_deployment()).unwrap());
         let client = MockClient::new(clos, "test".to_string()).into_client();
         assert!(mount_secret(client, "id").await.is_ok());
     }
 
     #[tokio::test]
     async fn test_mount_secret_no_depl() {
-        let clos = |req: &Option<Request<_>>| match req {
-            Some(r) if r.uri().path().contains(DEPLOYMENT_NAME) && r.method() == Method::GET => {
-                Err::<Deployment, _>(StatusCode::NOT_FOUND)
+        let clos = |req: &Request<_>| match req {
+            r if r.uri().path().contains(DEPLOYMENT_NAME) && r.method() == Method::GET => {
+                Err(StatusCode::NOT_FOUND)
             }
-            None => Ok(Deployment::default()),
             _ => panic!("unexpected API interaction: {req:?}"),
         };
         let client = MockClient::new(clos, "test".to_string()).into_client();
@@ -598,7 +614,11 @@ mod tests {
     async fn test_mount_secret_no_spec() {
         let mut depl = dummy_deployment();
         depl.spec = None;
-        let client = MockClient::new(move |_| Ok(depl.clone()), "test".to_string()).into_client();
+        let client = MockClient::new(
+            move |_| Ok(serde_json::to_string(&depl).unwrap()),
+            "test".to_string(),
+        )
+        .into_client();
         let err = mount_secret(client, "id").await.err().unwrap();
         assert!(err.to_string().contains("but had no spec"));
     }
@@ -608,7 +628,11 @@ mod tests {
         let mut depl = dummy_deployment();
         let spec = depl.spec.as_mut().unwrap();
         spec.template.spec = None;
-        let client = MockClient::new(move |_| Ok(depl.clone()), "test".to_string()).into_client();
+        let client = MockClient::new(
+            move |_| Ok(serde_json::to_string(&depl).unwrap()),
+            "test".to_string(),
+        )
+        .into_client();
         let err = mount_secret(client, "id").await.err().unwrap();
         assert!(err.to_string().contains("but had no pod spec"));
     }
@@ -619,7 +643,11 @@ mod tests {
         let spec = depl.spec.as_mut().unwrap();
         let pod_spec = spec.template.spec.as_mut().unwrap();
         pod_spec.containers = vec![];
-        let client = MockClient::new(move |_| Ok(depl.clone()), "test".to_string()).into_client();
+        let client = MockClient::new(
+            move |_| Ok(serde_json::to_string(&depl).unwrap()),
+            "test".to_string(),
+        )
+        .into_client();
         let err = mount_secret(client, "id").await.err().unwrap();
         assert!(err.to_string().contains("but had no containers"));
     }
@@ -633,13 +661,13 @@ mod tests {
     #[tokio::test]
     async fn test_generate_att_policy_already_exists() {
         let clos = |client| generate_attestation_policy(client, Default::default());
-        test_create_already_exists::<_, _, ConfigMap>(clos).await;
+        test_create_already_exists(clos).await;
     }
 
     #[tokio::test]
     async fn test_generate_att_policy_error() {
         let clos = |client| generate_attestation_policy(client, Default::default());
-        test_create_error::<_, _, ConfigMap>(clos).await;
+        test_create_error(clos).await;
     }
 
     #[tokio::test]
@@ -651,13 +679,13 @@ mod tests {
     #[tokio::test]
     async fn test_generate_secret_already_exists() {
         let clos = |client| generate_secret(client, "id");
-        test_create_already_exists::<_, _, Secret>(clos).await;
+        test_create_already_exists(clos).await;
     }
 
     #[tokio::test]
     async fn test_generate_secret_error() {
         let clos = |client| generate_secret(client, "id");
-        test_create_error::<_, _, Secret>(clos).await;
+        test_create_error(clos).await;
     }
 
     #[tokio::test]
@@ -669,13 +697,13 @@ mod tests {
     #[tokio::test]
     async fn test_generate_trustee_data_already_exists() {
         let clos = |client| generate_trustee_data(client, Default::default());
-        test_create_already_exists::<_, _, ConfigMap>(clos).await;
+        test_create_already_exists(clos).await;
     }
 
     #[tokio::test]
     async fn test_generate_trustee_data_error() {
         let clos = |client| generate_trustee_data(client, Default::default());
-        test_create_error::<_, _, ConfigMap>(clos).await;
+        test_create_error(clos).await;
     }
 
     #[tokio::test]
@@ -687,13 +715,13 @@ mod tests {
     #[tokio::test]
     async fn test_generate_kbs_service_already_exists() {
         let clos = |client| generate_kbs_service(client, Default::default(), 80);
-        test_create_already_exists::<_, _, Service>(clos).await;
+        test_create_already_exists(clos).await;
     }
 
     #[tokio::test]
     async fn test_generate_kbs_service_error() {
         let clos = |client| generate_kbs_service(client, Default::default(), 80);
-        test_create_error::<_, _, Service>(clos).await;
+        test_create_error(clos).await;
     }
 
     #[tokio::test]
@@ -705,12 +733,12 @@ mod tests {
     #[tokio::test]
     async fn test_generate_kbs_depl_already_exists() {
         let clos = |client| generate_kbs_deployment(client, Default::default(), "image");
-        test_create_already_exists::<_, _, Deployment>(clos).await;
+        test_create_already_exists(clos).await;
     }
 
     #[tokio::test]
     async fn test_generate_kbs_depl_error() {
         let clos = |client| generate_kbs_deployment(client, Default::default(), "image");
-        test_create_error::<_, _, Deployment>(clos).await;
+        test_create_error(clos).await;
     }
 }

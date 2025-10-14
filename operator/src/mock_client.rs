@@ -5,7 +5,7 @@
 
 use http::{Method, Request, Response, StatusCode};
 use kube::{Client, client::Body, error::ErrorResponse};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::convert::Infallible;
 use tower::service_fn;
 
@@ -28,19 +28,17 @@ macro_rules! assert_kube_api_error {
 
 pub(crate) use assert_kube_api_error;
 
-pub struct MockClient<F, T>
+pub struct MockClient<F>
 where
-    F: Fn(&Option<Request<Body>>) -> Result<T, StatusCode> + Send + 'static,
-    T: Default + Serialize + for<'de> Deserialize<'de>,
+    F: Fn(&Request<Body>) -> Result<String, StatusCode> + Send + 'static,
 {
     response_closure: F,
     namespace: String,
 }
 
-impl<F, T> MockClient<F, T>
+impl<F> MockClient<F>
 where
-    F: Fn(&Option<Request<Body>>) -> Result<T, StatusCode> + Send + 'static,
-    T: Clone + Default + Send + Serialize + for<'de> Deserialize<'de> + 'static,
+    F: Fn(&Request<Body>) -> Result<String, StatusCode> + Send + 'static,
 {
     pub fn new(response_closure: F, namespace: String) -> Self {
         Self {
@@ -50,40 +48,19 @@ where
     }
 
     pub fn into_client(self) -> Client {
-        let response_data = (self.response_closure)(&None).unwrap_or_default();
-        let response_json = serde_json::to_string(&response_data).unwrap();
-        let (kind, name) = serde_json::from_str::<serde_json::Value>(&response_json)
-            .map(|json_value| {
-                let kind = json_value
-                    .get("kind")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("Unknown")
-                    .to_string();
-                let name = json_value
-                    .get("metadata")
-                    .and_then(|m| m.get("name"))
-                    .and_then(|n| n.as_str())
-                    .unwrap_or("Unknown")
-                    .to_string();
-                (kind, name)
-            })
-            .unwrap_or(("Unknown".to_string(), "Unknown".to_string()));
-        let plural = kind.to_lowercase() + "s";
         let namespace = self.namespace.clone();
-
         let mock_svc = service_fn(move |req: Request<Body>| {
             let mut status_code = StatusCode::OK;
-            let response = (self.response_closure)(&Some(req));
+            let response = (self.response_closure)(&req);
             let body = if let Ok(response_data) = response {
-                let response_json = serde_json::to_string(&response_data).unwrap();
-                Body::from(response_json.into_bytes())
+                Body::from(response_data.into_bytes())
             } else {
                 status_code = response.err().unwrap();
                 let code = status_code.as_u16();
                 let error_response = match status_code {
                     StatusCode::CONFLICT => ErrorResponse {
                         status: "Failure".to_string(),
-                        message: format!("{plural} \"{name}\" already exists"),
+                        message: format!("resource already exists"),
                         reason: "AlreadyExists".to_string(),
                         code,
                     },
@@ -126,11 +103,11 @@ where
 pub async fn test_create_success<
     F: Fn(Client) -> S,
     S: Future<Output = anyhow::Result<()>>,
-    T: Clone + Default + Send + Serialize + for<'de> Deserialize<'de> + 'static,
+    T: Default + Serialize,
 >(
     create: F,
 ) {
-    let clos = |_: &_| Ok(T::default());
+    let clos = |_: &_| Ok(serde_json::to_string(&T::default()).unwrap());
     let client = MockClient::new(clos, "test".to_string()).into_client();
     assert!(create(client).await.is_ok());
 }
@@ -138,29 +115,22 @@ pub async fn test_create_success<
 pub async fn test_create_already_exists<
     F: Fn(Client) -> S,
     S: Future<Output = anyhow::Result<()>>,
-    T: Clone + Default + Send + Serialize + for<'de> Deserialize<'de> + 'static,
 >(
     create: F,
 ) {
-    let clos = |req: &Option<Request<_>>| match req {
-        Some(r) if r.method() == Method::POST => Err::<T, _>(StatusCode::CONFLICT),
-        None => Ok(T::default()),
+    let clos = |req: &Request<_>| match req {
+        r if r.method() == Method::POST => Err(StatusCode::CONFLICT),
         _ => panic!("unexpected API interaction: {req:?}"),
     };
     let client = MockClient::new(clos, "test".to_string()).into_client();
     assert!(create(client).await.is_ok());
 }
 
-pub async fn test_create_error<
-    F: Fn(Client) -> S,
-    S: Future<Output = anyhow::Result<()>>,
-    T: Clone + Default + Send + Serialize + for<'de> Deserialize<'de> + 'static,
->(
+pub async fn test_create_error<F: Fn(Client) -> S, S: Future<Output = anyhow::Result<()>>>(
     create: F,
 ) {
-    let clos = |req: &Option<Request<_>>| match req {
-        Some(r) if r.method() == Method::POST => Err::<T, _>(StatusCode::INTERNAL_SERVER_ERROR),
-        None => Ok(T::default()),
+    let clos = |req: &Request<_>| match req {
+        r if r.method() == Method::POST => Err(StatusCode::INTERNAL_SERVER_ERROR),
         _ => panic!("unexpected API interaction: {req:?}"),
     };
     let client = MockClient::new(clos, "test".to_string()).into_client();

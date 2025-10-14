@@ -284,12 +284,12 @@ mod tests {
     #[tokio::test]
     async fn test_create_pcrs_cm_exists() {
         let clos = |client| create_pcrs_config_map(client, Default::default());
-        test_create_already_exists::<_, _, ConfigMap>(clos).await;
+        test_create_already_exists(clos).await;
     }
 
     #[tokio::test]
     async fn test_create_pcrs_cm_error() {
         let clos = |client| create_pcrs_config_map(client, Default::default());
-        test_create_error::<_, _, ConfigMap>(clos).await;
+        test_create_error(clos).await;
     }
 }
