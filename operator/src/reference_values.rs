@@ -274,6 +274,9 @@ pub async fn disallow_image(ctx: RvContextData, boot_image: &str) -> Result<()> 
 mod tests {
     use super::*;
     use crate::mock_client::*;
+    use http::{Method, Request};
+    use k8s_openapi::api::batch::v1::JobStatus;
+    use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 
     #[tokio::test]
     async fn test_create_pcrs_cm_success() {
@@ -291,5 +294,81 @@ mod tests {
     async fn test_create_pcrs_cm_error() {
         let clos = |client| create_pcrs_config_map(client, Default::default());
         test_create_error(clos).await;
+    }
+
+    fn dummy_job() -> Job {
+        Job {
+            metadata: ObjectMeta {
+                name: Some("test".to_string()),
+                ..Default::default()
+            },
+            status: Some(JobStatus {
+                completion_time: Some(Time(Utc::now())),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn test_job_reconcile_success() {
+        let clos = |req: &Request<_>| {
+            if req.method() == Method::DELETE {
+                Ok(serde_json::to_string(&Job::default()).unwrap())
+            } else if req.uri().path().contains(PCR_CONFIG_MAP) {
+                Ok(serde_json::to_string(&trustee::tests::dummy_pcrs_map()).unwrap())
+            } else if req.uri().path().contains(trustee::TRUSTEE_DATA_MAP) {
+                Ok(serde_json::to_string(&ConfigMap {
+                    data: Some(BTreeMap::from([(
+                        trustee::REFERENCE_VALUES_FILE.to_string(),
+                        "[]".to_string(),
+                    )])),
+                    ..Default::default()
+                })
+                .unwrap())
+            } else {
+                panic!("unexpected API interaction: {req:?}");
+            }
+        };
+        let ctx = trustee::tests::generate_rv_ctx(
+            MockClient::new(clos, "test".to_string()).into_client(),
+        );
+        let result = job_reconcile(Arc::new(dummy_job()), Arc::new(ctx)).await.unwrap();
+        assert_eq!(result, Action::await_change());
+    }
+
+    #[tokio::test]
+    async fn test_job_no_name() {
+        let clos = |req: &Request<_>| panic!("unexpected API interaction: {req:?}");
+        let ctx = trustee::tests::generate_rv_ctx(
+            MockClient::new(clos, "test".to_string()).into_client(),
+        );
+        let err = job_reconcile(Arc::new(Default::default()), Arc::new(ctx)).await.err().unwrap();
+        assert!(err.to_string().contains("but had no name"));
+    }
+
+    #[tokio::test]
+    async fn test_job_no_status() {
+        let clos = |req: &Request<_>| panic!("unexpected API interaction: {req:?}");
+        let ctx = trustee::tests::generate_rv_ctx(
+            MockClient::new(clos, "test".to_string()).into_client(),
+        );
+        let mut job = dummy_job();
+        job.status = None;
+        let err = job_reconcile(Arc::new(job), Arc::new(ctx)).await.err().unwrap();
+        assert!(err.to_string().contains("but had no status"));
+    }
+
+    #[tokio::test]
+    async fn test_job_begun_deletion() {
+        let clos = |req: &Request<_>| panic!("unexpected API interaction: {req:?}");
+        let ctx = trustee::tests::generate_rv_ctx(
+            MockClient::new(clos, "test".to_string()).into_client(),
+        );
+        let mut job = dummy_job();
+        let status = job.status.as_mut().unwrap();
+        status.completion_time = None;
+        let result = job_reconcile(Arc::new(job), Arc::new(ctx)).await.unwrap();
+        assert_eq!(result, Action::requeue(Duration::from_secs(300)));
     }
 }

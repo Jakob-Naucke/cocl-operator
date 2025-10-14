@@ -31,9 +31,9 @@ use std::collections::BTreeMap;
 const TRUSTEE_DATA_DIR: &str = "/opt/trustee";
 const TRUSTEE_SECRETS_PATH: &str = "/opt/trustee/kbs-repository/default";
 const KBS_CONFIG_FILE: &str = "kbs-config.toml";
-const REFERENCE_VALUES_FILE: &str = "reference-values.json";
+pub(crate) const REFERENCE_VALUES_FILE: &str = "reference-values.json";
 
-const TRUSTEE_DATA_MAP: &str = "trustee-data";
+pub(crate) const TRUSTEE_DATA_MAP: &str = "trustee-data";
 const ATT_POLICY_MAP: &str = "attestation-policy";
 const DEPLOYMENT_NAME: &str = "trustee-deployment";
 const INTERNAL_KBS_PORT: i32 = 8080;
@@ -393,7 +393,7 @@ pub async fn generate_kbs_deployment(
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
     use crate::mock_client::*;
     use compute_pcrs_lib::Pcr;
@@ -420,7 +420,7 @@ mod tests {
         )]))
     }
 
-    fn dummy_pcrs_map() -> ConfigMap {
+    pub fn dummy_pcrs_map() -> ConfigMap {
         let data = BTreeMap::from([(
             PCR_CONFIG_FILE.to_string(),
             serde_json::to_string(&dummy_pcrs()).unwrap(),
@@ -476,7 +476,7 @@ mod tests {
         assert_eq!(vals, vec!["pcr0_val".to_string()]);
     }
 
-    fn generate_rv_ctx(client: Client) -> RvContextData {
+    pub fn generate_rv_ctx(client: Client) -> RvContextData {
         RvContextData {
             client,
             owner_reference: Default::default(),
