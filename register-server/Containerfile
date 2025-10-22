@@ -4,6 +4,9 @@
 
 ARG build_type
 FROM ghcr.io/confidential-clusters/buildroot AS builder
+RUN dnf install -y --setopt=install_weak_deps=0 install \
+    perl-FindBin perl-IPC-Cmd perl-File-Compare perl-File-Copy perl-Time-Piece
+
 ARG build_type
 WORKDIR /register-server
 

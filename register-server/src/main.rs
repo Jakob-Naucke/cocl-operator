@@ -14,8 +14,8 @@ use ignition_config::v3_5::{
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::{Api, Client};
 use log::{error, info};
-use std::convert::Infallible;
-use std::net::SocketAddr;
+use serde::Serialize;
+use std::{collections::HashMap, convert::Infallible, net::SocketAddr};
 use uuid::Uuid;
 use warp::{http::StatusCode, reply, Filter};
 
@@ -27,23 +27,27 @@ struct Args {
     port: u16,
 }
 
-fn generate_ignition(id: &str, public_addr: &str) -> IgnitionConfig {
+/// Sync with Trustee attestation-service::Initdata
+#[derive(Serialize)]
+struct Initdata {
+    version: String,
+    algorithm: kbs_types::HashAlgorithm,
+    data: HashMap<String, String>,
+}
+
+fn generate_ignition(id: &str, public_addr: &str) -> anyhow::Result<IgnitionConfig> {
+    let initdata = Initdata {
+        version: "0.1.0".to_string(),
+        algorithm: kbs_types::HashAlgorithm::Sha384,
+        data: HashMap::from([("uuid".to_string(), id.to_string())]),
+    };
     let clevis_conf = ClevisConfig {
         servers: vec![ClevisServer {
             url: format!("http://{public_addr}"),
             cert: "".to_string(),
         }],
         path: format!("default/{id}/root"),
-        // TODO add initdata, e.g.
-        // #[derive(Serialize)]
-        // struct Initdata {
-        //     uuid: String,
-        // }
-        // let initdata = Initdata {
-        //     uuid: id.to_string(),
-        // };
-        // ... initdata: serde_json::to_string(&initdata)?,
-        // depending on ultimate design decision
+        initdata: toml::to_string(&initdata)?,
     };
 
     let luks_root = "root";
@@ -66,14 +70,14 @@ fn generate_ignition(id: &str, public_addr: &str) -> IgnitionConfig {
     luks.label = Some(luks_root.to_string());
     luks.wipe_volume = Some(true);
 
-    IgnitionConfig {
+    Ok(IgnitionConfig {
         storage: Some(Storage {
             filesystems: Some(vec![fs]),
             luks: Some(vec![luks]),
             ..Default::default()
         }),
         ..Default::default()
-    }
+    })
 }
 
 async fn get_public_trustee_addr(client: Client) -> anyhow::Result<String> {
@@ -127,10 +131,12 @@ async fn register_handler(remote_addr: Option<SocketAddr>) -> Result<impl warp::
         Err(e) => return internal_error(e.context("Failed to get Trustee address")),
     };
 
-    Ok(reply::with_status(
-        reply::json(&generate_ignition(&id, &public_addr)),
-        StatusCode::OK,
-    ))
+    let ign = match generate_ignition(&id, &public_addr) {
+        Ok(ign) => ign,
+        Err(e) => return internal_error(e.context("Failed to generate Ignition")),
+    };
+
+    Ok(reply::with_status(reply::json(&ign), StatusCode::OK))
 }
 
 async fn create_machine(client: Client, uuid: &str, client_ip: &str) -> anyhow::Result<()> {
