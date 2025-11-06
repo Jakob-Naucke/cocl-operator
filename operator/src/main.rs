@@ -29,9 +29,7 @@ mod trustee;
 
 use crate::conditions::*;
 use cocl_operator_lib::{conditions::*, *};
-
-// tagged as 42.20250705.3.0
-const BOOT_IMAGE: &str = "quay.io/confidential-clusters/fedora-coreos@sha256:e71dad00aa0e3d70540e726a0c66407e3004d96e045ab6c253186e327a2419e5";
+use operator::*;
 
 fn is_installed(status: Option<ConfidentialClusterStatus>) -> bool {
     let chk = |c: &Condition| c.type_ == INSTALLED_CONDITION && c.status == "True";
@@ -44,7 +42,7 @@ fn is_installed(status: Option<ConfidentialClusterStatus>) -> bool {
 async fn reconcile(
     cocl: Arc<ConfidentialCluster>,
     client: Arc<Client>,
-) -> Result<Action, operator::ControllerError> {
+) -> Result<Action, ControllerError> {
     let generation = cocl.metadata.generation;
     let known_address = cocl.spec.public_trustee_addr.is_some();
     let address_condition = known_trustee_address_condition(known_address, generation);
@@ -59,7 +57,7 @@ async fn reconcile(
         info!("Registered deletion of ConfidentialCluster {name}");
         let condition = installed_condition(NOT_INSTALLED_REASON_UNINSTALLING, generation);
         conditions.as_mut().unwrap().push(condition);
-        update_status!(cocls, name, ConfidentialClusterStatus { conditions });
+        update_status!(cocls, name, ConfidentialClusterStatus { conditions })?;
         return Ok(Action::await_change());
     }
 
@@ -77,7 +75,7 @@ async fn reconcile(
         );
         let condition = installed_condition(NOT_INSTALLED_REASON_NON_UNIQUE, generation);
         conditions.as_mut().unwrap().push(condition);
-        update_status!(cocls, name, ConfidentialClusterStatus { conditions });
+        update_status!(cocls, name, ConfidentialClusterStatus { conditions })?;
         return Ok(Action::requeue(Duration::from_secs(60)));
     }
 
@@ -88,13 +86,13 @@ async fn reconcile(
     let status = ConfidentialClusterStatus {
         conditions: installing,
     };
-    update_status!(cocls, name, status);
+    update_status!(cocls, name, status)?;
 
     install_trustee_configuration(kube_client.clone(), &cocl).await?;
     install_register_server(kube_client, &cocl).await?;
     let condition = installed_condition(INSTALLED_REASON, generation);
     conditions.as_mut().unwrap().push(condition);
-    update_status!(cocls, name, ConfidentialClusterStatus { conditions });
+    update_status!(cocls, name, ConfidentialClusterStatus { conditions })?;
     Ok(Action::await_change())
 }
 
@@ -119,23 +117,16 @@ async fn install_trustee_configuration(client: Client, cocl: &ConfidentialCluste
         Err(e) => error!("Failed to create the KBS configuration configmap: {e}"),
     }
 
-    let rv_ctx = operator::RvContextData {
+    let rv_ctx = RvContextData {
         client: client.clone(),
         owner_reference: owner_reference.clone(),
         pcrs_compute_image: cocl.spec.pcrs_compute_image.clone(),
     };
+    reference_values::launch_rv_image_controller(rv_ctx.clone()).await;
     reference_values::launch_rv_job_controller(rv_ctx.clone()).await;
     match reference_values::create_pcrs_config_map(client.clone(), owner_reference.clone()).await {
         Ok(_) => info!("Created bare configmap for PCRs"),
         Err(e) => error!("Failed to create the PCRs configmap: {e}"),
-    }
-
-    // TODO machine config input
-    match reference_values::handle_new_image(rv_ctx, BOOT_IMAGE).await {
-        Ok(_) => info!("Computed or retrieved reference values for image: {BOOT_IMAGE}",),
-        Err(e) => {
-            error!("Failed to compute or retrieve reference values for image {BOOT_IMAGE}: {e}",)
-        }
     }
 
     match trustee::generate_attestation_policy(client.clone(), owner_reference.clone()).await {
@@ -195,8 +186,8 @@ async fn main() -> Result<()> {
 
     let client = Arc::new(kube_client);
     Controller::new(cl, watcher::Config::default())
-        .run(reconcile, operator::controller_error_policy, client)
-        .for_each(operator::controller_info)
+        .run(reconcile, controller_error_policy, client)
+        .for_each(controller_info)
         .await;
 
     Ok(())

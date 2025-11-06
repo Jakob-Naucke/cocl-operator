@@ -305,7 +305,9 @@ impl TestContext {
                 "-trustee-image",
                 "quay.io/confidential-clusters/key-broker-service:tpm-verifier-built-in-as-20250711",
                 "-register-server-image",
-                "localhost:5000/confidential-clusters/registration-server:latest"
+                "localhost:5000/confidential-clusters/registration-server:latest",
+                "-approved-image",
+                "quay.io/confidential-clusters/fedora-coreos@sha256:e71dad00aa0e3d70540e726a0c66407e3004d96e045ab6c253186e327a2419e5",
             ])
             .output()
             .await?;
@@ -450,6 +452,16 @@ resources:
             .to_str()
             .ok_or_else(|| anyhow::anyhow!("Invalid CR manifest path"))?;
         kube_apply!(cr_manifest_str, &self.test_name, "Applying CR manifest");
+
+        let approved_image_path = manifests_path.join("approved_image_cr.yaml");
+        let approved_image_str = approved_image_path
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("Invalid ApprovedImage manifest path"))?;
+        kube_apply!(
+            approved_image_str,
+            &self.test_name,
+            "Applying ApprovedImage manifest"
+        );
 
         let deployments_api: Api<Deployment> =
             Api::namespaced(self.client.clone(), &self.test_namespace);

@@ -400,6 +400,7 @@ mod tests {
                         parts: vec![],
                     },
                 ],
+                reference: "".to_string(),
             },
         )]))
     }
