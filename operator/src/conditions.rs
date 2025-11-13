@@ -3,15 +3,8 @@
 // SPDX-License-Identifier: MIT
 
 use chrono::Utc;
-use cocl_operator_lib::conditions::*;
+use cocl_operator_lib::{condition_status, conditions::*};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, Time};
-
-pub fn condition_status(status: bool) -> String {
-    match status {
-        true => "True".to_string(),
-        false => "False".to_string(),
-    }
-}
 
 pub fn known_trustee_address_condition(known: bool, generation: Option<i64>) -> Condition {
     let err = "No publicTrusteeAddr specified. Components can deploy, \
